@@ -1,0 +1,147 @@
+// ==UserScript==
+// @name         Fake Camera test
+// @namespace    http://tampermonkey.net/
+// @version      4.5
+// @description  Use a looping video as fake camera feed + silent mic
+// @match        *://umingle.com/*
+// @run-at       document-start
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    let WIDTH = 800;
+    let HEIGHT = 600;
+    const FPS = 30;
+
+    const VIDEO_URL = 'https://raw.githubusercontent.com/o0akmo/wwwb/main/face.mp4';
+
+    function createFakeVideoTrack() {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+
+        // temporary size until video loads
+        canvas.width = WIDTH;
+        canvas.height = HEIGHT;
+
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const video = document.createElement('video');
+        video.crossOrigin = 'anonymous';
+        video.src = VIDEO_URL;
+        video.loop = true;
+        video.muted = true;
+        video.autoplay = true;
+        video.playsInline = true;
+
+        let interval;
+
+        video.onloadeddata = async function () {
+            try {
+                await video.play();
+            } catch (e) {
+                console.log('Autoplay blocked:', e);
+            }
+
+            // ✅ AUTO MATCH VIDEO SIZE
+            WIDTH = video.videoWidth;
+            HEIGHT = video.videoHeight;
+
+            canvas.width = WIDTH;
+            canvas.height = HEIGHT;
+
+            ctx.fillStyle = '#000000';
+            ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+            interval = setInterval(() => {
+                if (video.readyState >= 2) {
+                    ctx.drawImage(video, 0, 0, WIDTH, HEIGHT);
+
+                    // subtle noise
+                    for (let i = 0; i < 300; i++) {
+                        const x = Math.random() * WIDTH;
+                        const y = Math.random() * HEIGHT;
+                        ctx.fillStyle = `rgba(255,255,255,${Math.random() * 0.015})`;
+                        ctx.fillRect(x, y, 1, 1);
+                    }
+                }
+            }, 1000 / FPS);
+        };
+
+        video.onerror = () => {
+            interval = setInterval(() => {
+                ctx.fillStyle = '#000000';
+                ctx.fillRect(0, 0, WIDTH, HEIGHT);
+            }, 1000 / FPS);
+        };
+
+        return canvas.captureStream(FPS).getVideoTracks()[0];
+    }
+
+    function createFakeAudioTrack() {
+        const audioCtx = new AudioContext();
+        const dest = audioCtx.createMediaStreamDestination();
+        const bufferSize = 4096;
+        const scriptNode = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+
+        scriptNode.onaudioprocess = function (e) {
+            const output = e.outputBuffer.getChannelData(0);
+            for (let i = 0; i < bufferSize; i++) {
+                output[i] = 0;
+            }
+        };
+
+        scriptNode.connect(dest);
+        return dest.stream.getAudioTracks()[0];
+    }
+
+    function buildFakeStream(constraints) {
+        const tracks = [];
+        if (constraints && constraints.video) tracks.push(createFakeVideoTrack());
+        if (constraints && constraints.audio) tracks.push(createFakeAudioTrack());
+        return new MediaStream(tracks);
+    }
+
+    const originalGUM = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+
+    navigator.mediaDevices.getUserMedia = function (constraints) {
+        try {
+            return Promise.resolve(buildFakeStream(constraints));
+        } catch (e) {
+            return originalGUM(constraints);
+        }
+    };
+
+    navigator.getUserMedia =
+    navigator.webkitGetUserMedia =
+    navigator.mozGetUserMedia = function (constraints, success, error) {
+        try {
+            success(buildFakeStream(constraints));
+        } catch (e) {
+            if (error) error(e);
+        }
+    };
+
+    navigator.mediaDevices.enumerateDevices = async function () {
+        return [
+            {
+                deviceId: 'fakecam001',
+                groupId: 'fakegroup1',
+                kind: 'videoinput',
+                label: 'HD Webcam',
+                toJSON: () => ({})
+            },
+            {
+                deviceId: 'fakemic001',
+                groupId: 'fakegroup2',
+                kind: 'audioinput',
+                label: 'Microphone',
+                toJSON: () => ({})
+            }
+        ];
+    };
+
+    console.log('[FakeCam v4.5] Auto-scaled video stream active.');
+})();
